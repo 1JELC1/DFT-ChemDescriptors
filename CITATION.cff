@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - family-names: "López-Cervantes"     
+    given-names: "Juan Emanuel"        
+    orcid: "https://orcid.org/0009-0001-5428-6337"  
+    affiliation: "Universidad Autónoma del Estado de Hidalgo" 
+title: "DFT-ChemDescriptors: Automated Global and Local Reactivity Descriptors"
+version: 1.0.0
+date-released: 2026-01-09
+url: "https://github.com/1JELC1/DFT-ChemDescriptors"
+repository-code: "https://github.com/1JELC1/DFT-ChemDescriptors"
+keywords:
+  - cheminformatics
+  - DFT
+  - molecular-descriptors
+  - QSAR
+  - python
+  - computational-chemistry
+  - conceptual-dft
+  - reactivity-indices
+  - QTAIM
+  - fukui-indices
+  - electronic-properties
+  - multiwfn
+abstract: "A comprehensive Python tool for calculating global and local molecular properties using DFT (Density Functional Theory) results and 1D, 2D, and 3D chemical descriptors, designed for QSAR modeling and mechanistic interpretation."
+license: Apache-2.0
