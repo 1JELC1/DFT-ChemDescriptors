@@ -4,6 +4,11 @@ Code to calculate RDKit and Mordred descriptors
 """
 import pandas as pd
 import numpy as np
+if not hasattr(np, 'product'):
+    try:
+        np.product = np.prod
+    except Exception:
+        pass
 from rdkit import RDLogger
 RDLogger.DisableLog('rdApp.*')
 from rdkit import Chem

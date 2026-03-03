@@ -8,3 +8,4 @@ padelpy
 ase
 networkx
 vedo
+padelpy
