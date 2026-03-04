@@ -2,6 +2,8 @@
 
 ![DFT-ChemDescriptors Logo](images/logo-chem2.png)
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18868438.svg)](https://doi.org/10.5281/zenodo.18868438)
+
 A comprehensive Python tool for obtaining **global and local molecular properties** using Density Functional Theory (DFT) results and generating standard chemical descriptors (RDKit, Mordred).
 
 It supports **Gaussian (`.fchk`)** and **ORCA (`.wfn`/`.wfx`)** formats. This workflow automates the interaction with **Multiwfn** to compute quantum-chemical reactivity indices (Conceptual DFT), atomic charges, and topological properties (QTAIM), merging them with 1D/2D/3D molecular descriptors for QSAR/QSPR studies or machine learning. It is flexible regarding input states: while all three states (Neutral, Anion, Cation) are needed for Global Reactivity Indices, you can run it with **one or two states** to obtain local properties, fragment descriptors, and standard molecular descriptors.
@@ -129,7 +131,11 @@ Feel free to check the [issues page](https://github.com/1JELC1/DFT-ChemDescripto
 
 ## Citation
 
-If you use this software, please cite it using the metadata in [CITATION.cff](CITATION.cff).
+If you use this software in your research, please cite it using our Zenodo DOI:
+
+**DOI:** [10.5281/zenodo.18868438](https://doi.org/10.5281/zenodo.18868438)
+
+You can also use the citation metadata provided in the [CITATION.cff](CITATION.cff) file.
 
 ## License
 
