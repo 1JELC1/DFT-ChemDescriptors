@@ -23,15 +23,16 @@ from vedo import Sphere, Tube, Plotter, Text3D, Assembly, Text2D
 import vedo
 from collections import Counter, defaultdict
 from ase.neighborlist import NeighborList, natural_cutoffs
-
-# Section 1: Connectivity and Graph
 import numpy as np
 from ase.data import covalent_radii, atomic_numbers
+
+
+# Section 1: Connectivity and Graph
 
 # Default maximum valences
 # Elements not in this list will default to 7 (accommodating octahedral structures)
 MAX_VALENCE_DEF = {
-    'H': 1, 'C': 4, 'N': 4, 'O': 3,
+    'H': 1, 'C': 4, 'N': 4, 'O': 2,
     'F': 1, 'Cl': 1, 'Br': 1, 'I': 1,
     'P': 5, 'S': 6, 'B': 4, 'Si': 4,
     'Fe': 6, 'Co': 6, 'Ni': 6, 'Cu': 6, 'Zn': 4,
@@ -49,11 +50,11 @@ def calculate_connectivity_matrix(
     pair_scale: dict | None = None,
 ):
     """
-    Computes the connectivity matrix using a robust strategy:
-    1. Broad Phase: Detect all potential bonds using a generous distance threshold
+    Computes the connectivity matrix using the following strategy:
+    1. Broad Phase: Detect all potential bonds using a distance threshold
        (natural_cutoffs * mult). This captures elongated bonds.
-    2. Pruning Phase: Enforce maximum valence constraints by keeping the strongest
-       (shortest) bonds and removing the excess.
+    2. Pruning Phase: Enforce maximum valence constraints by keeping the
+       shortest bonds and removing the excess.
     """
     if max_valence is None:
         max_valence = MAX_VALENCE_DEF
@@ -74,12 +75,12 @@ def calculate_connectivity_matrix(
         si = S[i]
         for j in range(i+1, n):
             sj = S[j]
-            # skip H-H contacts unless allowed
+            # skip H-H contacts
             if not allow_HH and si == 'H' and sj == 'H':
                 continue
             
             rj = cutoffs[j]
-            # Threshold is sum of cutoff radii (which already include scale)
+            # Threshold is sum of cutoff radii
             threshold = ri + rj
             
             if D[i, j] <= threshold:
@@ -96,7 +97,6 @@ def calculate_connectivity_matrix(
             if deg > vmax:
                 # sort neighbors by increasing distance
                 order = neighbors[np.argsort(D[i, neighbors])]
-                # We keep the 'vmax' closest ones.
                 to_remove = order[vmax:]
                 
                 for j in to_remove:
@@ -282,7 +282,6 @@ def get_element_color(symbol: str) -> str:
 def get_element_radius(symbol: str) -> float:
     """
     Return a display radius for a given chemical element symbol.
-    Radii are scaled relative to hydrogen as the smallest and heavier elements are larger.
     """
     radii = {
         'H': 0.3,
@@ -318,7 +317,7 @@ def select_atoms_interactive(molecule):
     # Compute chemical connectivity matrix
     A = calculate_connectivity_matrix(molecule)
 
-    # Bonds (using A)
+    # Bonds (using Angstroms)
     bonds = []
     for i in range(n_atoms):
         for j in range(i + 1, n_atoms):
@@ -460,7 +459,7 @@ def select_interest_fragment(molecule, fragment_indices):
         ass.pickable(True)
         ass.idx = i
         ass.original_color = color0
-        ass.SetPosition(positions[i])
+        ass.pos(positions[i])
         atom_assemblies.append(ass)
 
     # Scene
@@ -718,49 +717,34 @@ def start(file_path: str, specificity: str, req: str = 'all', search: bool = Tru
 
     print(f"\nFragment found in {len(matched_files)} file(s).")
     
-    # Statistics for multiple matches
-    multi_match_count = 0
-    # Combine results and not_found for the CSV report
     all_counts = {}
-
-    # Process found fragments using the filtered list
     match_counts = Counter(filtered_results_names)
     
     for name, count in match_counts.items():
-        if count > 1:
-            multi_match_count += 1
         all_counts[name] = count
 
-    # Process not found
     for name in not_found:
         all_counts[name] = 0
 
-    if multi_match_count > 0:
-        print(f"WARNING! Files with >1 match: {multi_match_count}")
-        print("Define the common fragment more robustly.\n"
-              "Otherwise, the first match will be taken for files with more than one match.")
-    
+    if not_found:
+        print("Not found in:", not_found)
+
     # Generate CSV Report
     csv_path = os.path.join(directory, "fragment_counts.csv")
     try:
         with open(csv_path, "w", encoding="utf-8") as f:
             f.write("Molecule,Count\n")
-            # Sort by filename for cleaner output
             for name in sorted(all_counts.keys()):
                 f.write(f"{name},{all_counts[name]}\n")
-        print(f"Search report saved to: {csv_path}")
+        print(f"---> Search report saved to: {csv_path}")
     except Exception as e:
         print(f"Error saving CSV report: {e}")
-
-    if not_found:
-        print("Not found in:", not_found)
 
     return results_dict, atoms_of_interest, neighbor_dict_interest
 
 
 if __name__ == '__main__':
-    # Entry point when running this module directly.  Prompt the user for a reference `.xyz` file and a specificity
-    # level, then initiate the fragment search.
+    # Entry point when running this module directly. The user enters a reference `.xyz` file and a specificity level, then initiate the fragment search.
     while True:
         file_path = input("Enter the path to the .xyz file of the reference molecule: ").strip()
         if not os.path.isfile(file_path):
@@ -768,7 +752,7 @@ if __name__ == '__main__':
             continue
         break
 
-    # Prompt for specificity (only 0 or 1)
+    # Enter specificity (only 0 or 1)
     while True:
         print("'0': Connectivity only (Matches based on internal bonds of the fragment).")
         print("'1': Specificity (Matches require matching neighbor environment).")
@@ -782,31 +766,31 @@ if __name__ == '__main__':
 
 class InteractiveSession:
     def __init__(self, molecule, cp_data, path_data, analysis_callback):
-        # Disable default vedo/VTK keyboard shortcuts globally BEFORE creating Plotter
+        # Disable default vedo/VTK keyboard shortcuts
         vedo.settings.enable_default_keyboard_callbacks = False
         
         self.molecule = molecule
         self.raw_cp_data = cp_data  # List of (cp_index, type, [x,y,z])
-        self.path_data = path_data  # { path_id: np.array([[x,y,z]...]) }
-        self.analysis_callback = analysis_callback # Function to call for CP detection
+        self.path_data = path_data
+        self.analysis_callback = analysis_callback # Function for CP detection
         
         # State
-        self.fragments = defaultdict(set) # { frag_id (1-based): set(atom_indices 0-based) }
+        self.fragments = defaultdict(set)
         self.current_frag_id = 1
-        self.mode = 'EDIT' # 'EDIT' or 'VIEW'
-        self.delete_mode = False # Toggle for deleting CPs by click
+        self.mode = 'EDIT'
+        self.delete_mode = False
         
         # Default active CP types: {1: Atom, 2: Bond, 3: Ring, 4: Cage}
         self.active_cp_types = {1, 2, 3, 4}
-        self.ignored_cp_indices = set() # Set of deleted CP indices (from raw_cp_data)
+        self.ignored_cp_indices = set()
         
         # Graphics
         self.plt = Plotter(axes=0, title='Interactive Fragment Selector - Press h for help')
-        self.atom_actors = [] # List of Assembly(Sphere, Text)
+        self.atom_actors = []
         self.bond_actors = []
         self.cp_actors = []
         self.path_actors = []
-        self.frag_labels = [] # List of Text2D
+        self.frag_labels = []
 
         self.txt_info = Text2D('', pos='bottom-left', c='white', bg='black', alpha=0.7)
         self.txt_status = Text2D('', pos='top-left', c='white', bg='black', alpha=0.7)
@@ -822,7 +806,6 @@ class InteractiveSession:
 
         # Setup
         self._build_scene()
-        # Force initial text update to show legend/keys
         self._update_status()
 
     def _build_scene(self):
@@ -843,7 +826,7 @@ class InteractiveSession:
             sp.pickable(True)
             sp.idx = i
             
-            # Label (hidden by default)
+            # Label
             z_offset = radius + 0.1
             txt = Text3D(f'{sym}{i+1}', pos=(pos[0], pos[1], pos[2]+z_offset), s=0.2, c='black', justify='center')
             txt.follow_camera(); txt.lighting('off'); txt.pickable(False); txt.alpha(0)
@@ -864,9 +847,9 @@ class InteractiveSession:
     def _get_frag_color(self, frag_id):
         # Palette for fragments
         colors = {
-            1: 'tomato',      # Red-ish
-            2: 'dodgerblue',  # Blue-ish
-            3: 'mediumseagreen', # Green-ish
+            1: 'tomato',
+            2: 'dodgerblue',
+            3: 'mediumseagreen',
             4: 'gold',
             5: 'slateBlue',
             6: 'hotpink',
@@ -888,19 +871,16 @@ class InteractiveSession:
             if i in assignment:
                 fid = assignment[i]
                 sp.color(self._get_frag_color(fid))
-                # Highlight current fragment selection more? maybe
             else:
                 sp.color(ass.original_color)
                 
-        # Update labels whenever colors change
         self._update_frag_labels()
 
     def _update_frag_labels(self):
-        # Clear old labels
         self.plt.remove(self.frag_labels)
         self.frag_labels = []
         
-        # Start top-right (slightly lower to avoid overlapping with toolbar buttons if any)
+        # Start top-right
         start_x = 0.90
         start_y = 0.90
         step_y = 0.04
@@ -911,7 +891,6 @@ class InteractiveSession:
             label_color = self._get_frag_color(fid)
             
             # Create 2D text at fixed screen position
-            # pos is (x,y) normalized 0..1
             y_pos = start_y - (i * step_y)
             
             t = Text2D(f"Frag {fid}", pos=(start_x, y_pos), s=1.0, c=label_color)
@@ -920,7 +899,7 @@ class InteractiveSession:
         self.plt.add(self.frag_labels)
 
     def _update_status(self):
-        # 1. Top-Left: Status & Filters
+        # Top-Left: Status & Filters
         def _box(txt, checked):
             state = "ON" if checked else "off"
             return f"{txt}:{state}"
@@ -958,7 +937,7 @@ class InteractiveSession:
     def _on_click(self, evt):
         if not evt.actor: return
         
-        # --- CP DELETION LOGIC (VIEW MODE) ---
+        # Cp deletion logic
         if self.mode == 'VIEW' and self.delete_mode:
             # Check if clicked actor is a CP
             if hasattr(evt.actor, 'cp_idx'):
@@ -966,11 +945,9 @@ class InteractiveSession:
                 print(f"Deleting CP {cp_idx}")
                 self.ignored_cp_indices.add(cp_idx)
                 self.plt.remove(evt.actor)
-                # Should we remove associated paths? Ideally yes, but refreshing view handles it.
-                # Just remove actor for immediate feedback.
                 return
 
-        # --- ATOM SELECTION LOGIC (EDIT MODE) ---
+        # Atom selection logic
         if self.mode == 'EDIT':
             if not hasattr(evt.actor, 'idx'): return
             
@@ -1050,7 +1027,7 @@ class InteractiveSession:
             print('q: Quit and use current results')
             return
 
-        # --- EDIT MODE CONTROLS ---
+        # Edit mode controls
         if self.mode == 'EDIT':
             if k.isdigit() and k != '0':
                 fid = int(k)
@@ -1104,7 +1081,7 @@ class InteractiveSession:
                 print('Running CP Analysis...')
                 self._run_analysis()
                 
-        # --- VIEW MODE CONTROLS ---
+        # View mode controls
         elif self.mode == 'VIEW':
             if k == 'f':
                 print('Returning to Edit Mode...')
@@ -1122,7 +1099,7 @@ class InteractiveSession:
         frag_indices_1based = {}
         for fid, atoms in self.fragments.items():
             if not atoms: continue
-            name = f'Fragmento{fid}'
+            name = f'Fragment{fid}'
             frag_indices_1based[name] = sorted([i + 1 for i in atoms])
             
         idx_nums = np.array([i + 1 for i in range(self.n_atoms)])
@@ -1158,12 +1135,12 @@ class InteractiveSession:
         
         count = 0
         for (idx, type_cp, coord) in self.raw_cp_data:
-            if idx in self.ignored_cp_indices: continue # Skip ignored CPs
+            if idx in self.ignored_cp_indices: continue 
 
             if idx in cp_indices_to_show:
                 c = colors.get(type_cp, 'white')
                 act = Sphere(pos=coord, r=0.2, c=c).lighting('glossy')
-                act.cp_idx = idx # Tag for deletion
+                act.cp_idx = idx
                 self.cp_actors.append(act)
                 count += 1
                 
@@ -1185,7 +1162,7 @@ class InteractiveSession:
                 if show_path:
                     t = Tube(coords, r=0.03, c='purple').alpha(0.6)
                     self.path_actors.append(t)
-                    self.visible_path_indices.add(pid) # Capture ID
+                    self.visible_path_indices.add(pid)
                     path_count += 1
                 
         self.plt.add(self.cp_actors)
@@ -1215,10 +1192,10 @@ class InteractiveSession:
         frag_indices_1based = {}
         for fid, atoms in self.fragments.items():
             if not atoms: continue
-            name = f'Fragmento{fid}'
+            name = f'Fragment{fid}'
             frag_indices_1based[name] = sorted([i + 1 for i in atoms])
             
-        # Returning 4 items: fragments, active types, ignored indices, visible paths
+        # Returning: fragments, active types, ignored indices, visible paths
         return frag_indices_1based, self.active_cp_types, self.ignored_cp_indices, self.visible_path_indices
 
 # Wrapper function to be called from IME
