@@ -83,12 +83,16 @@ def save_csv(df, filename, work_path):
             except ValueError:
                 pass
 
-            # Save sorted DataFrame
-            sorted_df.to_csv(filename, index=False)
-            # Verify save
-            df_check = pd.read_csv(filename)
+            # Create the full path
+            full_path = Path(work_path) / filename
+
+            # Save sorted DataFrame to the output folder
+            sorted_df.to_csv(full_path, index=False)
+            
+            # Verify save by reading from the output folder
+            df_check = pd.read_csv(full_path)
             df_check = df_check.sort_values(by=['Molecule'])
-            df_check.to_csv(work_path/filename, index=False)
+            df_check.to_csv(full_path, index=False)
 
             print(f"--> File {filename} generated successfully")
             break
@@ -1103,11 +1107,11 @@ save_csv(local_df, "local_properties.csv", work_path)
 
 global_df = None
 local_df = None
-if Path('global_properties.csv').exists():
-    try: global_df = pd.read_csv('global_properties.csv')
+if (work_path / 'global_properties.csv').exists():
+    try: global_df = pd.read_csv(work_path / 'global_properties.csv')
     except: pass
-if Path('local_properties.csv').exists():
-    try: local_df = pd.read_csv('local_properties.csv')
+if (work_path / 'local_properties.csv').exists():
+    try: local_df = pd.read_csv(work_path / 'local_properties.csv')
     except: pass
 
 if global_df is not None and local_df is not None:
@@ -1491,7 +1495,7 @@ else:
     local_combined_df = pd.DataFrame({'Molecule': list(results.keys())})
 for input_str, method in method_suffixes:
     try:
-        method_df = pd.read_csv(f'local_properties_{method}.csv')
+        method_df = pd.read_csv(work_path / f'local_properties_{method}.csv')
         local_combined_df = pd.merge(local_combined_df, method_df, on='Molecule', how='outer')
     except Exception as e:
         print(f"Error merging properties for method {method}: {e}")
@@ -1742,23 +1746,23 @@ if process_cation:
     print(f"Errors: {errors}")
 
 # Merge into local_properties file
-local_df = pd.read_csv('local_properties.csv')
+local_df = pd.read_csv(work_path / 'local_properties.csv')
 
 if process_neutral:
     try:
-        neutral_atom_df = pd.read_csv('local_properties_cps_atoms_N.csv')
+        neutral_atom_df = pd.read_csv(work_path / 'local_properties_cps_atoms_N.csv')
         local_df = merge_dataframes(local_df, neutral_atom_df)
     except Exception: pass
 
 if process_anion:
     try:
-        anion_atom_df = pd.read_csv('local_properties_cps_atoms_N+1.csv')
+        anion_atom_df = pd.read_csv(work_path / 'local_properties_cps_atoms_N+1.csv')
         local_df = merge_dataframes(local_df, anion_atom_df)
     except Exception: pass
 
 if process_cation:
     try:
-        cation_atom_df = pd.read_csv('local_properties_cps_atoms_N-1.csv')
+        cation_atom_df = pd.read_csv(work_path / 'local_properties_cps_atoms_N-1.csv')
         local_df = merge_dataframes(local_df, cation_atom_df)
     except Exception: pass
 
@@ -1884,7 +1888,7 @@ def calculate_cps_differences(df, property_name, atom1, atom2=None):
 
 
 # Calculate CP differences between states
-local_df = pd.read_csv('local_properties.csv')
+local_df = pd.read_csv(work_path / 'local_properties.csv')
 neighbors_list = [neighbors for _, neighbors in neighbor_dict.items()]
 
 # CP properties
@@ -1904,13 +1908,13 @@ save_csv(local_df, "local_properties.csv", work_path)
 # Merge of global and local properties
 try:
     if (work_path / 'global_properties.csv').exists():
-        global_df = pd.read_csv('global_properties.csv')
+        global_df = pd.read_csv(work_path / 'global_properties.csv')
         global_df['Molecule'] = global_df['Molecule'].astype(str)
     else:
         global_df = pd.DataFrame(columns=['Molecule'])
 
     if (work_path / 'local_properties.csv').exists():
-        local_df = pd.read_csv('local_properties.csv')
+        local_df = pd.read_csv(work_path / 'local_properties.csv')
         local_df['Molecule'] = local_df['Molecule'].astype(str)
     else:
         local_df = pd.DataFrame(columns=['Molecule'])
@@ -1953,7 +1957,7 @@ else:
 
 
 if (work_path / 'molecular_descriptors_rdkit_mordred_padel.csv').exists():
-    rdkit_df = pd.read_csv('molecular_descriptors_rdkit_mordred_padel.csv')
+    rdkit_df = pd.read_csv(work_path / 'molecular_descriptors_rdkit_mordred_padel.csv')
     rdkit_df['Molecule'] = rdkit_df['Molecule'].astype(str)
     
     if 'Molecule' in final_df.columns:
