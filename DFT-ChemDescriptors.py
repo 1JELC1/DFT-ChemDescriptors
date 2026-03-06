@@ -1691,6 +1691,7 @@ def process_molecule(molecule_name, match_list, neutral_extension, fchk_folder, 
     return molecule_properties
 
 # Calculate atomic and bond CP properties for neutral state
+num_cpus = os.cpu_count() or 1
 processes = max(1, num_cpus // 2)
 if process_neutral:
     cps_atom_properties = []
