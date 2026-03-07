@@ -696,28 +696,29 @@ process_cdft = (process_neutral and process_anion and process_cation) and len(co
 cdft_folder = Path(work_path, "CDFT")
 cdft_folder.mkdir(parents=True, exist_ok=True)
 
+# Get number of CPUs and calculate upper limit
+num_cpus = os.cpu_count()
+max_calculations = max(1, num_cpus // 4)
+
+while True:
+    try:
+        n = int(input(f"\nEnter number of simultaneous calculations to perform (default {max_calculations}, maximum {max_calculations})"
+                      f"\n(recommended to test with number that doesn't saturate CPU usage over 90%): ") or max_calculations)
+        if 0 < n <= max_calculations:
+            break
+        else:
+            print(f"Please enter an integer greater than 0 and less than or equal to {max_calculations}.")
+    except ValueError:
+        print("Please enter a valid integer.")
+
+print(f"\nPerforming {n} simultaneous calculations.")
+
 if process_cdft:
 
     errors = []
 
-    # Get number of CPUs and calculate upper limit
-    num_cpus = os.cpu_count()
-    max_calculations = max(1, num_cpus // 4)
-
-    while True:
-        try:
-            n = int(input(f"\nEnter number of simultaneous calculations to perform (default {max_calculations}, maximum {max_calculations})"
-                          f"\n(recommended to test with number that doesn't saturate CPU usage over 90%): ") or max_calculations)
-            if 0 < n <= max_calculations:
-                break
-            else:
-                print(f"Please enter an integer greater than 0 and less than or equal to {max_calculations}.")
-        except ValueError:
-            print("Please enter a valid integer.")
-
     print("\nSoftness units are eV^-1, sum_zero-point, dU, dH and dG are eV/particle and others in eV")
     print(f"Generating {len(neutral_file_list)} global and local CDFT property files in /{Path(cdft_folder).name} ...")
-    print(f"Performing {n} simultaneous calculations.")
 
     # Create and launch calculation threads
     threads = []
@@ -1276,8 +1277,8 @@ print(f"Calculating charges for {len(method_suffixes)} method(s)...")
 # Create task queue for calculations
 task_queue = queue.Queue()
 threads = []
-n = 8
-for _ in range(n):
+charge_threads = n
+for _ in range(charge_threads):
     t = threading.Thread(target=calculate_charges)
     t.start()
     threads.append(t)
@@ -1285,7 +1286,7 @@ for method, suffix in method_suffixes:
     for i in range(len(all_files)):
         task_queue.put((i, method, suffix))
 task_queue.join()
-for _ in range(n):
+for _ in range(charge_threads):
     task_queue.put(None)
 for t in threads:
     t.join()
