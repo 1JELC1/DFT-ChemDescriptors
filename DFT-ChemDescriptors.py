@@ -975,44 +975,50 @@ if missing_xyz:
     print("Warning: Missing following XYZ files:", ", ".join(sorted(missing_xyz)))
 
 while True:
-    choice = input(
-        f"\nTo extract local properties, enter filename of one of your {len(target_files_list)} molecules "
-        f"to select the fragment common to all your molecules (d = choose first in list): ")
-    if choice == 'd':
-        first_base = get_molecule_name(target_files_list[0], target_extension)
-        file = Path(xyz_folder) / f"{first_base}.xyz"
-        print(f"Openning file {file}")
-        print(f"\nCommon fragment and atoms for property extraction will be selected using molecule {first_base}")
-        break
-    else:
-        file = Path(xyz_folder) / f"{choice}.xyz"
-        if file.name in [f.name for f in xyz_files_list]:
+    while True:
+        choice = input(
+            f"\nTo extract local properties, enter filename of one of your {len(target_files_list)} molecules "
+            f"to select the fragment common to all your molecules (d = choose first in list): ")
+        if choice == 'd':
+            first_base = get_molecule_name(target_files_list[0], target_extension)
+            file = Path(xyz_folder) / f"{first_base}.xyz"
+            print(f"Openning file {file}")
+            print(f"\nCommon fragment and atoms for property extraction will be selected using molecule {first_base}")
             break
         else:
-            print("\nEntered file not found in your xyz folder, choose another")
+            file = Path(xyz_folder) / f"{choice}.xyz"
+            if file.name in [f.name for f in xyz_files_list]:
+                break
+            else:
+                print("\nEntered file not found in your xyz folder, choose another")
 
-# Define fragment search specificity level
-print("\nDefine fragment search specificity:")
-print("'0': Connectivity only (Matches based on internal bonds of the fragment).")
-print("'1': Specificity (Matches require matching neighbor environment).")
-specificity = input("Enter specificity (0/1, default 0): ").strip()
-if specificity not in ['0', '1']:
-    specificity = "0"
+    # Define fragment search specificity level
+    print("\nDefine fragment search specificity:")
+    print("'0': Connectivity only (Matches based on internal bonds of the fragment).")
+    print("'1': Specificity (Matches require matching neighbor environment).")
+    specificity = input("Enter specificity (0/1, default 0): ").strip()
+    if specificity not in ['0', '1']:
+        specificity = "0"
 
-results, atoms_of_interest, neighbor_dict = Ff.start(file, specificity)
+    results, atoms_of_interest, neighbor_dict = Ff.start(file, specificity)
 
-print(f"ATOMS OF INTEREST: {atoms_of_interest}")
-# Keep only first match per molecule
-multi_match_count = 0
-for key, matches in results.items():
-    if len(matches) > 1:
-        multi_match_count += 1
-        results[key] = [matches[0]]
+    print(f"ATOMS OF INTEREST: {atoms_of_interest}")
+    # Keep only first match per molecule
+    multi_match_count = 0
+    for key, matches in results.items():
+        if len(matches) > 1:
+            multi_match_count += 1
+            results[key] = [matches[0]]
 
-if multi_match_count > 0:
-    print(f"\nWARNING! Files with >1 match: {multi_match_count}")
-    print("Define the common fragment more robustly.")
-    print("Otherwise, the first match will be taken for files with more than one match.\n")
+    if multi_match_count > 0:
+        print(f"\nWARNING! Files with >1 match: {multi_match_count}")
+        print("Define the common fragment more robustly.")
+        print("Otherwise, the first match will be taken for files with more than one match.\n")
+        retry = input("Do you want to redefine the fragment? (y/n, default y): ").strip().lower()
+        if retry == 'n':
+            break
+    else:
+        break
 
 ''' Section 6: Extraction and calculation of local properties (Extract from CDFT files) '''
 
