@@ -14,7 +14,9 @@ It supports **Gaussian (`.fchk`)** and **ORCA (`.wfn`/`.wfx`)** formats. This wo
 *   **Local Property Analysis**:
     *   **Atomic Charges**: Computes charges using various population analyses (17 methods available, e.g., Hirshfeld, Voronoi, Mulliken, ADCH, CM5, AIM).
     *   **CDFT Descriptors**: Fukui indices ($f^+$, $f^-$, $f^0$), Conceptual Dual Descriptor (CDD), and local electrophilicity/nucleophilicity (Hirshfeld).
+    *   **Fukui Kernel Descriptors**: Computes bond-level kernel descriptors based on products of Fukui functions between bonded atoms within the fragment, as described by [Franco-Pérez et al. (2020)](https://doi.org/10.1007/s00214-020-2557-4).
     *   **QTAIM Critical Points**: Calculates **Atomic Critical Points (ACPs)** and **Bond Critical Points (BCPs)** associated with the fragment.
+    *   **Orbital Overlap Distance D(r)**: Optionally extracts the orbital overlap distance function $D(r)$ at each critical point.
     *   **Derived Fragment Properties**: Aggregated properties capturing the electronic environment and variability of the entire fragment.
 *   **Descriptor Generation**: Calculates **1D, 2D, and 3D** descriptors using **RDKit** and **Mordred**.
 *   **Interactive Fragment Finder**: A 3D graphical interface to identify common substructures across a series of molecules for targeted local property extraction.
@@ -52,15 +54,38 @@ The script follows a structured pipeline:
 
 Calculated for **selected atoms**, **bond critical points (BCPs)**, and **atomic critical points (ACPs)** that belong to the fragment:
 *   **Charges and Derivatives**: Atomic charges (Hirshfeld, CM5, etc.), Fukui Indices, Conceptual Dual Descriptor (CDD).
+*   **Fukui Kernel Descriptors**: Bond-level products of Fukui functions between bonded atom pairs within the fragment ([Franco-Pérez et al., 2020](https://doi.org/10.1007/s00214-020-2557-4)). Please consult [Derived Fragment Properties](DERIVED_PROPERTIES.md) for the complete list of calculated kernel functions and their detailed equations.
+
+**Topological properties at Critical Points (ACPs and BCPs)**:
+
+*   **Electron-density fields**:
+    *   Density of all electrons
+    *   Density of Alpha electrons
+    *   Density of Beta electrons
 *   **Topological (QTAIM)**:
-    *   Electron Density ($\rho$)
-    *   Laplacian of Electron Density ($\nabla^2\rho$)
-    *   Lagrangian ($G$) and Hamiltonian ($K$) Kinetic Energy Densities
-    *   Potential Energy Density ($V$)
-    *   Energy Density ($H$)
-    *   Electron Localization Function (ELF) & Local Orbital Locator (LOL)
+    *   Laplacian of electron density ($\nabla^2\rho$)
+    *   Lagrangian kinetic energy $G(r)$
+    *   Hamiltonian kinetic energy $K(r)$
+    *   Potential energy density $V(r)$
+    *   Energy density $E(r)$ or $H(r)$
+*   **Electron localization**:
+    *   Electron Localization Function (ELF)
+    *   Localized Orbital Locator (LOL)
+*   **Information-theoretic**:
+    *   Local information entropy
+*   **Noncovalent-interaction (NCI) & Related**:
+    *   Sign(λ₂)·ρ
+    *   Sign(λ₂)·ρ (promolecular approximation)
+    *   Delta-g (promolecular approximation)
+    *   Delta-g (Hirshfeld partition)
+*   **Local reactivity**:
     *   Average Local Ionization Energy (ALIE)
-    *   Electrostatic Potential (ESP)
+*   **Electrostatic potential (ESP)**:
+    *   ESP from nuclear charges
+    *   ESP from electrons
+    *   Total ESP
+
+*   **Orbital Overlap Distance $D(r)$**: Optionally calculated at each CP position, providing a measure of orbital overlap at bond and atomic critical points.
 
 ![Local Properties Diagram](images/local_properties_diagram.png)
 

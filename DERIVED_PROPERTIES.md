@@ -48,5 +48,25 @@ The $-G/V$ ratio is a sensitive indicator of bond nature:
 *   **$0.5 < -G/V < 1$**: Indicates **intermediate** interactions.
 *   **$-G/V > 1$**: Indicates **closed-shell (non-covalent)** interactions (e.g., ionic, van der Waals). (Kinetic energy dominates).
 
+### 4. Fukui Kernel Descriptors (Bond-Level)
+
+Based on the work of [Franco-Pérez et al. (2020)](https://doi.org/10.1007/s00214-020-2557-4), these descriptors capture bond-level reactivity by computing products of Fukui functions between bonded atom pairs **within** the fragment.
+
+
+For a bond between atoms $A$ and $B$:
+
+| Descriptor | Formula | Description |
+|---|---|---|
+| `fukui_kernel_plus` | $f^+_A \cdot f^+_B$ | Product of electrophilic Fukui functions |
+| `fukui_kernel_minus` | $f^-_A \cdot f^-_B$ | Product of nucleophilic Fukui functions |
+| `fukui_kernel_avg` | $\frac{1}{2}(f^+_A f^+_B + f^-_A f^-_B)$ | Average of the electrophilic and nucleophilic kernels |
+| `dual_kernel_simple` | $f^+_A f^+_B - f^-_A f^-_B$ | Simple dual kernel (difference of kernels) |
+| `dual_kernel_tau` | $f^+_A f^+_B - f^-_A f^-_B - \frac{1}{2}\Delta f_A \Delta f_B$ | Dual kernel $\tau$ variant |
+| `dual_kernel_plus` | $f^+_A f^+_B - f^-_A f^-_B + \frac{1}{2}\Delta f_A \Delta f_B$ | Dual kernel plus variant |
+
+Where $\Delta f_i = f^+_i - f^-_i$ is the Dual Descriptor of atom $i$.
+
+**Naming convention**: `{descriptor_type}_{atom1}_{atom2}_{method}`, with the lower-indexed atom always listed first to ensure canonical ordering.
+
 ## Application in QSAR
 These derived descriptors allow you to regress biological activity or physical properties against the precise electronic state of a specific pharmacophore or functional group, rather than the entire molecule.

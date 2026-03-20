@@ -22,12 +22,56 @@ import psutil
 import queue
 import tempfile
 import csv
+import json
 from collections import defaultdict
 import other_desc as desc
 from scipy.optimize import fsolve
 import concurrent.futures
 from rdkit import Chem
 from rdkit.Chem import rdDetermineBonds
+import atexit
+
+# --- Multiwfn Settings Manager ---
+_multiwfn_settings_path = None
+_original_settings_content = None
+
+def _restore_multiwfn_settings():
+    global _multiwfn_settings_path, _original_settings_content
+    if _multiwfn_settings_path and _original_settings_content:
+        try:
+            with open(_multiwfn_settings_path, 'w', encoding='utf-8') as f:
+                f.write(_original_settings_content)
+        except Exception:
+            pass
+
+def optimize_multiwfn_settings():
+    global _multiwfn_settings_path, _original_settings_content
+    try:
+        mwfn_exe = shutil.which('Multiwfn')
+        if not mwfn_exe:
+            if os.path.exists('Multiwfn.exe'):
+                mwfn_exe = 'Multiwfn.exe'
+            elif os.path.exists('Multiwfn'):
+                mwfn_exe = 'Multiwfn'
+                
+        if mwfn_exe:
+            settings_path = Path(mwfn_exe).parent / 'settings.ini'
+            if settings_path.exists():
+                _multiwfn_settings_path = settings_path
+                with open(settings_path, 'r', encoding='utf-8') as f:
+                    _original_settings_content = f.read()
+                
+                # Replace num1Dpoints
+                new_content = re.sub(r'num1Dpoints=\s*\d+', 'num1Dpoints= 2', _original_settings_content)
+                
+                with open(settings_path, 'w', encoding='utf-8') as f:
+                    f.write(new_content)
+                
+                atexit.register(_restore_multiwfn_settings)
+    except Exception as e:
+        print(f"Warning: Failed to optimize Multiwfn settings: {e}")
+
+optimize_multiwfn_settings()
 
 
 ''' Section 1: Function declarations '''
@@ -48,52 +92,75 @@ def run_multiwfn_output(inputs, work_dir, output_file):
         with open(output_file, 'w') as out:
             subprocess.run(['Multiwfn'], stdin=f, stdout=out, stderr=subprocess.DEVNULL, cwd=work_dir)
 
+def extract_dr_value(fchk_path, x, y, z):
+    """
+    Programmatically extracts the Orbital Overlap Distance D(r) exact scalar 
+    value at specific coordinates (x, y, z Bohr) by launching Multiwfn
+    """
+    x2, y2, z2 = x, y, z + 0.000001
+    commands = f"3\n21\n2\n2\n{x:.8f},{y:.8f},{z:.8f},{x2:.8f},{y2:.8f},{z2:.8f}\n1\n0\nq\n"
+    
+    try:
+        process = subprocess.Popen(
+            ['Multiwfn', fchk_path],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1
+        )
+        
+        process.stdin.write(commands)
+        process.stdin.flush()
+        
+        extracted_val = None
+        for line in iter(process.stdout.readline, ''):
+            if not line:
+                break
+            
+            match = re.search(r"Minimal/Maximum value:\s+([-+eE0-9.]+)", line)
+            if match:
+                extracted_val = float(match.group(1))
+                process.terminate()
+                break
+                
+        return extracted_val
+    except Exception as e:
+        print(f"Error extracting D(r) value at ({x},{y},{z}) for {fchk_path}: {e}")
+        return None
+
+
 def save_csv(df, filename, work_path):
     """Save DataFrame to CSV file with error handling and sorting"""
     while True:
         try:
-            # Check for duplicate columns
-            duplicate_columns = df.columns[df.columns.duplicated()]
-            if not duplicate_columns.empty:
-                print(f"Warning: Found duplicate columns: {list(duplicate_columns)}")
-                print("Renaming duplicate columns.")
-
-            # Replace empty strings with NaN
-            df.replace("", pd.NA, inplace=True)
-            # Drop columns where all values are NaN
-            df.dropna(axis=1, how='all', inplace=True)
-
-            # Rename duplicate columns
-            for col in duplicate_columns:
-                mask = df.columns.duplicated(keep='first')
-                new_cols = df.columns.where(~mask, df.columns + '_duplicate')
-                df.columns = new_cols
-
             # Ensure 'Molecule' column exists
             if 'Molecule' not in df.columns:
                 raise ValueError("Column 'Molecule' not found in DataFrame.")
 
-            # Sort DataFrame by 'Molecule'
-            sorted_df = df.sort_values(by=['Molecule'])
+            # Check for duplicate columns
+            duplicate_columns = df.columns[df.columns.duplicated()]
+            if not duplicate_columns.empty:
+                print(f"Warning: Found duplicate columns in {filename}. Renaming them.")
+                mask = df.columns.duplicated(keep='first')
+                df.columns = df.columns.where(~mask, df.columns + '_duplicate')
 
-            # Try to convert 'Molecule' to numeric if possible
+            # Drop columns where all values are NaN
+            df.dropna(axis=1, how='all', inplace=True)
+
+            # Try to convert 'Molecule' to numeric for proper sorting
             try:
-                sorted_df['Molecule'] = pd.to_numeric(sorted_df['Molecule'])
-                sorted_df = sorted_df.sort_values(by=['Molecule'])
-            except ValueError:
+                df['Molecule'] = pd.to_numeric(df['Molecule'])
+            except (ValueError, TypeError):
                 pass
-
-            # Create the full path
-            full_path = Path(work_path) / filename
-
-            # Save sorted DataFrame to the output folder
-            sorted_df.to_csv(full_path, index=False)
             
-            # Verify save by reading from the output folder
-            df_check = pd.read_csv(full_path)
-            df_check = df_check.sort_values(by=['Molecule'])
-            df_check.to_csv(full_path, index=False)
+            # Sort DataFrame by 'Molecule'
+            df.sort_values(by=['Molecule'], inplace=True)
 
+            # Create the full path and save
+            full_path = Path(work_path) / filename
+            df.to_csv(full_path, index=False)
+            
             print(f"--> File {filename} generated successfully")
             break
         except Exception as e:
@@ -1235,6 +1302,34 @@ q""", "STOCK"),
 q""", "AIM")
 ]
 
+# Initialize DR cache variables
+dr_cache = {}
+dr_cache_lock = threading.Lock()
+
+def get_dr_cache_path():
+    return work_path / "dr_cache.json"
+
+def load_dr_cache():
+    global dr_cache
+    dr_cache_file = get_dr_cache_path()
+    if os.path.exists(dr_cache_file):
+        try:
+            with open(dr_cache_file, "r") as f:
+                dr_cache = json.load(f)
+            print(f"Loaded {len(dr_cache)} cached D(r) values.")
+        except Exception as e:
+            print(f"Error loading {dr_cache_file}: {e}")
+
+def save_to_dr_cache(key, value):
+    with dr_cache_lock:
+        dr_cache[key] = value
+        try:
+            dr_cache_file = get_dr_cache_path()
+            with open(dr_cache_file, "w") as f:
+                json.dump(dr_cache, f, indent=4)
+        except Exception as e:
+            pass
+
 print("Select one or more atomic charge calculation methods:")
 for idx, (input_str, method_name) in enumerate(available_method_suffixes, start=1):
     print(f"{idx}. {method_name}")
@@ -1277,6 +1372,12 @@ os.makedirs(charges_folder, exist_ok=True)
 
 # List of all files (neutral, anions, cations)
 all_files = [f for f in (neutral_file_list + anion_file_list + cation_file_list) if f]
+
+calc_dr_input = input("Calculate Orbital Overlap Distance D(r) at CPs? (y/n, default n): ").strip().lower()
+calc_dr = calc_dr_input == 'y'
+
+if calc_dr:
+    load_dr_cache()
 
 print(f"Calculating charges for {len(method_suffixes)} method(s)...")
 
@@ -1675,6 +1776,7 @@ def process_molecule(molecule_name, match_list, neutral_extension, fchk_folder, 
             with open(atomic_cp_file, 'r') as cp_file:
                 lines = cp_file.readlines()
                 current_atom = None
+                current_cp_coords = None
                 for line in lines:
                     if 'Corresponding nucleus:' in line:
                         parts = "".join(line.split()[2:])
@@ -1684,6 +1786,28 @@ def process_molecule(molecule_name, match_list, neutral_extension, fchk_folder, 
                             current_atom = atoms_of_interest[atom_idx]
                         except Exception:
                             current_atom = None
+
+                    if 'Position (Bohr):' in line and current_atom:
+                        parts = line.split()
+                        try:
+                            # Position (Bohr): X Y Z
+                            x, y, z = float(parts[2]), float(parts[3]), float(parts[4])
+                            current_cp_coords = (x, y, z)
+                            
+                            if calc_dr:
+                                dr_key = f"{molecule_name}_{state}_{current_atom}"
+                                dr_val = dr_cache.get(dr_key)
+                                
+                                if dr_val is None:
+                                    dr_val = extract_dr_value(str(full_file_path), x, y, z)
+                                    if dr_val is not None:
+                                        save_to_dr_cache(dr_key, dr_val)
+                                
+                                if dr_val is not None:
+                                    props[f'Orbital_Overlap_Distance_D(r)_{state}_{current_atom}'] = dr_val
+
+                        except Exception as e:
+                            print(f"Error parsing coordinates for ACP {current_atom}: {e}")
 
                     if current_atom:
                         for prop in cps_properties_list:
@@ -1713,7 +1837,8 @@ if process_neutral:
             cps_atom_properties.extend(fut.result())
 
     cps_atom_properties_df = pd.DataFrame(cps_atom_properties)
-    save_csv(cps_atom_properties_df, 'local_properties_cps_atoms_N.csv', work_path)
+    if not cps_atom_properties_df.empty:
+        save_csv(cps_atom_properties_df, 'local_properties_cps_atoms_N.csv', work_path)
     print(f"Errors: {errors}")
 
 # Calculate atomic and bond CP properties for anion state
@@ -1731,7 +1856,8 @@ if process_anion:
             cps_atom_properties.extend(fut.result())
 
     cps_atom_properties_df = pd.DataFrame(cps_atom_properties)
-    save_csv(cps_atom_properties_df, 'local_properties_cps_atoms_N+1.csv', work_path)
+    if not cps_atom_properties_df.empty:
+        save_csv(cps_atom_properties_df, 'local_properties_cps_atoms_N+1.csv', work_path)
     print(f"Errors: {errors}")
 
 # Calculate atomic and bond CP properties for cation state
@@ -1749,7 +1875,8 @@ if process_cation:
             cps_atom_properties.extend(fut.result())
 
     cps_atom_properties_df = pd.DataFrame(cps_atom_properties)
-    save_csv(cps_atom_properties_df, 'local_properties_cps_atoms_N-1.csv', work_path)
+    if not cps_atom_properties_df.empty:
+        save_csv(cps_atom_properties_df, 'local_properties_cps_atoms_N-1.csv', work_path)
     print(f"Errors: {errors}")
 
 # Merge into local_properties file
@@ -1792,6 +1919,7 @@ def extract_bond_cps_properties(cps_folder, cps_properties_list, state):
         path_list = list(Path(cps_folder).glob(f'*{charge}_cps_*_bond.txt'))
         molecule_names = [p.stem.split(charge)[0] for p in path_list]
     else:
+        charge = neutral_extension
         # State N
         anion_list = set(Path(p) for p in glob.glob(str(Path(cps_folder) / f'*{anion_extension}_cps_*_bond.txt')))
         cation_list = set(Path(p) for p in glob.glob(str(Path(cps_folder) / f'*{cation_extension}_cps_*_bond.txt')))
@@ -1809,9 +1937,42 @@ def extract_bond_cps_properties(cps_folder, cps_properties_list, state):
             continue
 
         properties2 = {'Molecule': molecule_name}
+        
+        # Determine the full file path to the molecule's fchk for this state to calculate D(r)
+        full_file_path = None
+        if molecule_name in molecule_file_map:
+            # Reconstruct the state mapping based strictly on the current iteration extensions
+            if charge == neutral_extension: path_state = 'N'
+            elif charge == anion_extension: path_state = 'N+1'
+            elif charge == cation_extension: path_state = 'N-1'
+            else: path_state = 'N'
+            
+            full_file_path = molecule_file_map[molecule_name].get(path_state)
+
         with open(file, 'r') as file_in:
             for line in file_in:
                 line = line.strip()
+                
+                if line.startswith('Position (Bohr):') and full_file_path:
+                    parts = line.split()
+                    try:
+                        x, y, z = float(parts[2]), float(parts[3]), float(parts[4])
+                        
+                        if calc_dr:
+                            dr_key = f"{molecule_name}_{state}_{bond_atoms[0]}-{bond_atoms[1]}"
+                            dr_val = dr_cache.get(dr_key)
+                            
+                            if dr_val is None:
+                                dr_val = extract_dr_value(str(full_file_path), x, y, z)
+                                if dr_val is not None:
+                                    save_to_dr_cache(dr_key, dr_val)
+                            
+                            if dr_val is not None:
+                                properties2[f'Orbital_Overlap_Distance_D(r)_{state}_{bond_atoms[0]}-{bond_atoms[1]}'] = dr_val
+
+                    except Exception as e:
+                        print(f"Error extracting D(r) for BCP {molecule_name} {bond_atoms[0]}-{bond_atoms[1]}: {e}")
+
                 for prop in cps_properties_list:
                     if line.startswith(prop):
                         key = f'{prop}_{state}_{bond_atoms[0]}-{bond_atoms[1]}'
@@ -1831,26 +1992,31 @@ if process_neutral:
     try:
         props = extract_bond_cps_properties(cps_folder, cps_properties_list, "N")
         bond_df = pd.DataFrame(props)
-        save_csv(bond_df, "local_properties_cps_bond_N.csv", work_path)
+        if not bond_df.empty:
+            save_csv(bond_df, "local_properties_cps_bond_N.csv", work_path)
     except Exception: pass
 
 if process_anion:
     try:
         props = extract_bond_cps_properties(cps_folder, cps_properties_list, "N+1")
         bond_df = pd.DataFrame(props)
-        save_csv(bond_df, "local_properties_cps_bond_N+1.csv", work_path)
+        if not bond_df.empty:
+            save_csv(bond_df, "local_properties_cps_bond_N+1.csv", work_path)
     except Exception: pass
 
 if process_cation:
     try:
         props = extract_bond_cps_properties(cps_folder, cps_properties_list, "N-1")
         bond_df = pd.DataFrame(props)
-        save_csv(bond_df, "local_properties_cps_bond_N-1.csv", work_path)
+        if not bond_df.empty:
+            save_csv(bond_df, "local_properties_cps_bond_N-1.csv", work_path)
     except Exception: pass
 
 # Merge with local_properties
-local_df = pd.read_csv(work_path / 'local_properties.csv')
-# local_df = local_df.dropna(axis=1, how='any')
+try:
+    local_df = pd.read_csv(work_path / 'local_properties.csv')
+except Exception:
+    local_df = pd.DataFrame(columns=['Molecule'])
 
 if process_neutral:
     try:
@@ -1873,8 +2039,7 @@ if process_cation:
 # Remove columns that are completely empty
 local_df = local_df.dropna(axis=1, how='all')
 numeric_cols = local_df.select_dtypes(include='number').columns
-local_df = local_df.drop(columns=[c for c in numeric_cols if c != 'Molecule' and (local_df[c].sum() == 0)])
-save_csv(local_df, "local_properties.csv", work_path)
+local_df = local_df.drop(columns=[c for c in numeric_cols if c != 'Molecule' and (local_df[c].fillna(0) == 0).all()])
 
 # Function to calculate differences between anion, cation and neutral states for CPs
 def calculate_cps_differences(df, property_name, atom1, atom2=None):
@@ -1891,11 +2056,8 @@ def calculate_cps_differences(df, property_name, atom1, atom2=None):
         )
     except Exception as error:
         pass
-        #print(f"Error calculating CP differences for {property_name}{suffix}: {error}")
-
 
 # Calculate CP differences between states
-local_df = pd.read_csv(work_path / 'local_properties.csv')
 neighbors_list = [neighbors for _, neighbors in neighbor_dict.items()]
 
 # CP properties
@@ -1909,7 +2071,7 @@ for prop_name in cps_properties_list:
             if i > j and at2 in neighbors_list[i]:
                 calculate_cps_differences(local_df, prop_name, at1, at2)
 
-# Save updated local_properties
+# Save updated local_properties ONLY ONCE after all local modifications
 save_csv(local_df, "local_properties.csv", work_path)
 
 # Merge of global and local properties
@@ -1984,9 +2146,11 @@ else:
 
 ''' Calculation of atomic properties in terms of neighboring atoms '''
 
-def calculate_derived_descriptor(atom, atom_charge, neighbor_charges, atom_label):
+def calculate_derived_descriptor(atom, atom_charge, neighbor_charges, atom_label, atom_label_map=None):
     descriptors = {}
     atom = atom_label
+    if atom_label_map is None:
+        atom_label_map = {}
     def div(numerator, denominator):
         if pd.isna(numerator) or pd.isna(denominator):
             return np.nan
@@ -2186,6 +2350,48 @@ def calculate_derived_descriptor(atom, atom_charge, neighbor_charges, atom_label
         f"{atom}_Elec_prox": elec_prox,
     })
 
+    # Product of Fukui functions between atom pairs
+    for neighbor_prop in neighbor_charges:
+        neighbor_atom_raw = neighbor_prop.get('Atom', '')
+        if neighbor_atom_raw and neighbor_atom_raw in atom_label_map:
+            try:
+                # Map neighbor to its normalized label
+                neighbor_atom = atom_label_map.get(neighbor_atom_raw, neighbor_atom_raw)
+
+                idx1 = int(atom.split('(')[0])
+                idx2 = int(neighbor_atom.split('(')[0])
+                if idx1 < idx2:
+                    a1, a2 = atom, neighbor_atom
+                else:
+                    a1, a2 = neighbor_atom, atom
+
+                n_f_plus = get_scalar(neighbor_prop, 'f+')
+                n_f_minus = get_scalar(neighbor_prop, 'f-')
+
+                prod_plus = None
+                prod_minus = None
+
+                if not pd.isna(atom_f_plus) and not pd.isna(n_f_plus):
+                    prod_plus = atom_f_plus * n_f_plus
+                    descriptors[f"fukui_kernel_plus_{a1}_{a2}"] = prod_plus
+                if not pd.isna(atom_f_minus) and not pd.isna(n_f_minus):
+                    prod_minus = atom_f_minus * n_f_minus
+                    descriptors[f"fukui_kernel_minus_{a1}_{a2}"] = prod_minus
+
+                if prod_plus is not None and prod_minus is not None:
+                    descriptors[f"dual_kernel_simple_{a1}_{a2}"] = prod_plus - prod_minus
+                    descriptors[f"fukui_kernel_avg_{a1}_{a2}"] = 0.5 * (prod_plus + prod_minus)
+
+                    cdd_k = atom_f_plus - atom_f_minus
+                    cdd_kp = n_f_plus - n_f_minus
+
+                    cross_term = 0.5 * cdd_k * cdd_kp
+
+                    descriptors[f"dual_kernel_tau_{a1}_{a2}"] = prod_plus - prod_minus - cross_term
+                    descriptors[f"dual_kernel_plus_{a1}_{a2}"] = prod_plus - prod_minus + cross_term
+            except Exception as e:
+                print(f"Warning: Could not compute kernel descriptors for {atom}-{neighbor_atom_raw}: {e}")
+
     return descriptors
 
 def extract_atomic_properties(base_path, molecule, method, atoms_of_interest, neighbor_dict, atoms_of_interest_labels):
@@ -2199,6 +2405,11 @@ def extract_atomic_properties(base_path, molecule, method, atoms_of_interest, ne
 
     properties = {}
     new_descriptors = {}
+
+    # Build a mapping from raw atom strings to normalized labels
+    atom_label_map = {}
+    for i, raw_atom in enumerate(atoms_of_interest):
+        atom_label_map[raw_atom] = atoms_of_interest_labels[i]
 
     for i, atom in enumerate(atoms_of_interest):
         atom_label = atoms_of_interest_labels[i]
@@ -2216,7 +2427,7 @@ def extract_atomic_properties(base_path, molecule, method, atoms_of_interest, ne
             for neighbor in neighbors:
                 neighbor_index = int(neighbor.split('(')[0])
                 neighbor_index = neighbor_index - 1
-                if neighbor_index <= len(df):
+                if neighbor_index < len(df):
                     neighbor_properties = df.iloc[neighbor_index].to_dict()
                     properties[atom]['neighbors'][neighbor] = neighbor_properties
                     neighbor_properties['Atom'] = neighbor
@@ -2226,10 +2437,10 @@ def extract_atomic_properties(base_path, molecule, method, atoms_of_interest, ne
 
             try:
                 new_descriptors.update(
-                    calculate_derived_descriptor(atom, atom_properties, neighbor_charges, atom_label)
+                    calculate_derived_descriptor(atom, atom_properties, neighbor_charges, atom_label, atom_label_map)
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Warning: Error calculating derived descriptors for atom {atom} in {molecule}: {e}")
         else:
             print(f"Warning: No properties found for atom {atom} in {file_path}")
 
