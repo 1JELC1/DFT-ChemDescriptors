@@ -70,3 +70,82 @@ Where $\Delta f_i = f^+_i - f^-_i$ is the Dual Descriptor of atom $i$.
 
 ## Application in QSAR
 These derived descriptors allow you to regress biological activity or physical properties against the precise electronic state of a specific pharmacophore or functional group, rather than the entire molecule.
+
+---
+
+## Substituent Site Descriptors *(New in v2.0)*
+
+When **substituent site analysis** is enabled, the script goes beyond the fragment itself and characterizes the **substituent groups** attached to each atom of the common fragment. This produces a rich set of statistical descriptors saved in `substituent_site_descriptors.csv`.
+
+### Concept
+
+For each atom in the common fragment, the script identifies all substituent branches (atoms **not** in the fragment that are connected to it). These branches are then analyzed from two complementary perspectives:
+
+1. **Proximal (from the fragment outward)**: How does the substituent look from the perspective of the fragment atom?
+2. **Distal (from the tips inward)**: How does the substituent look from its most distant extremities?
+
+### Naming Convention
+
+All substituent descriptors follow the format:
+
+```
+R_{atomID}({symbol})_{block}_{property}_{method_or_state}_{stat}
+```
+
+**Examples**:
+- `R_12(C)_general_qN_Hirshfeld_mean` — Mean neutral charge (Hirshfeld) over all substituent atoms at site C12
+- `R_5(C)_L2_fplus_Hirshfeld_sum` — Sum of $f^+$ for proximal layer L2 at site C5
+- `R_12(C)_D1_ACP_Density_of_all_electrons_N_mean` — Mean electron density ACP at the distal tips (D1) of site C12
+- `R_12(C)_BCP_anchor_Orbital_Overlap_Distance_D(r)_N_mean` — Mean D(r) at the anchor bond CPs
+
+### Descriptor Blocks
+
+#### General Block
+Statistical aggregation over **all** substituent atoms at a site:
+- `n_branches`: Number of distinct branches
+- `n_atoms`: Total substituent atom count
+- `n_heavy_atoms`: Non-hydrogen atoms
+- `n_heteroatoms`: Non-C, non-H atoms
+- Charge/Fukui statistics: sum, mean, max, min, std for each charge method
+- ACP statistics: mean, max, min, std for each QTAIM property
+- Internal BCP statistics: mean, max, min, std for bonds within the branches
+
+#### Proximal Layers (L1, L2, L3)
+Cumulative topological layers expanding **outward** from the fragment atom via BFS:
+- **L1**: Substituent atoms at topological distance 1 (directly bonded to the fragment atom)
+- **L2**: L1 $\cup$ atoms at distance $\le 2$
+- **L3**: L2 $\cup$ atoms at distance $\le 3$
+
+Same statistics as the General block, but restricted to atoms in each layer.
+
+#### Distal Layers (D1, D2, D3)
+Cumulative topological layers expanding **inward** from the most distant substituent atoms:
+
+1. **Determine D_max**: The maximum topological distance from the fragment atom to any substituent atom
+2. **Identify the Distal Region**: All atoms at distance $D_{max}$ (the "tips")
+3. **Reverse Multi-Source BFS**: Simultaneously propagate from all tip atoms back through the substituent subgraph
+4. **Cumulative layers**:
+   - **D1**: The distal region itself (distance 0 from tips)
+   - **D2**: D1 $\cup$ atoms at distance $\le 1$ from tips
+   - **D3**: D2 $\cup$ atoms at distance $\le 2$ from tips
+
+This approach elegantly handles cyclic substituents, bridge-bonded systems, and asymmetric branching without special-case logic.
+
+#### Anchor BCP Block
+Bond Critical Point properties at the bond(s) connecting the fragment atom to each substituent root atom:
+- `BCP_anchor_count`: Number of anchor bonds
+- Statistics (mean, max, min, std) for each QTAIM property across anchor BCPs
+- Optionally includes $D(r)$ (Orbital Overlap Distance) at the anchor BCP position
+
+#### Internal BCP Block
+Bond Critical Point statistics for bonds **within** the substituent branches (both in General and per-layer blocks):
+- `BCP_internal_count`: Number of internal bonds
+- Statistics for each QTAIM property
+
+### Dynamic Computation
+- **Atomic CPs for substituents**: If ACPs for substituent atoms are not found in the base `_cps_atomic.txt` file, the script dynamically launches Multiwfn to compute them, saving results to `_cps_sub_atomic.txt`
+- **Bond CPs**: Anchor and internal BCPs are computed on-demand and cached as `_cps_sub_anchor_{a1}-{a2}_bond.txt` and `_cps_sub_{a1}-{a2}_bond.txt`
+- **Skip existing**: If output files already exist, calculations are skipped for efficiency
+
+### Parallelization
+All substituent computations are parallelized across molecules using `ThreadPoolExecutor` with a safe thread count of `os.cpu_count() // 2` to prevent system overload.

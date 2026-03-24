@@ -253,7 +253,8 @@ def search_fragment_in_molecules(molecules: list[tuple[str, np.ndarray, list[str
                 fragment_in_molecule = [molecule_symbols[idx] for idx in match]
                 num_dict, neighbor_dict = calculate_neighbor_counts(molecule_matrix, match, fragment_in_molecule,
                                                                     molecule_symbols)
-                results.append((name, match, fragment_in_molecule, num_dict, neighbor_dict))
+                results.append((name, match, fragment_in_molecule, num_dict, neighbor_dict,
+                                molecule_matrix, molecule_symbols))
             found.append(name)
         else:
             not_found.append(name)
@@ -550,6 +551,192 @@ def neighbor_count_signature(dic_num: dict) -> tuple:
     return tuple(sorted(signature.items()))
 
 
+def identify_substituent_sites(
+    connectivity_matrix: np.ndarray,
+    molecule_symbols: list[str],
+    fragment_indices_0based: list[int],
+    interest_indices_0based: list[int],
+    interest_labels: list[str],
+    max_layers: int = 3,
+) -> dict:
+    """
+    Identify substituent sites for each atom of interest in the fragment.
+
+    For each interest atom, finds external branches (connected components of
+    atoms not in the fragment) and computes cumulative topological layers
+    (L1, L2, L3) measured from the fragment atom.
+
+    Parameters
+    ----------
+    connectivity_matrix 
+    molecule_symbols
+    fragment_indices_0based 
+    interest_indices_0based 
+    interest_labels 
+    max_layers 
+
+    Returns
+    -------
+    dict: molecule_sites dictionary keyed by interest atom reference ID (1-based).
+    """
+    frag_set = set(fragment_indices_0based)
+    n_atoms = len(molecule_symbols)
+    molecule_sites = {}
+
+    for ref_idx, atom_0 in enumerate(interest_indices_0based):
+        atom_1 = atom_0 + 1 
+        symbol = molecule_symbols[atom_0]
+        label = interest_labels[ref_idx]
+        # Extract reference ID from label like "3(O)" -> 3
+        ref_id = int(label.split('(')[0])
+
+        # Find external neighbors (not in fragment)
+        all_neighbors = [j for j in range(n_atoms) if connectivity_matrix[atom_0, j] == 1]
+        external_roots = [j for j in all_neighbors if j not in frag_set]
+
+        if not external_roots:
+            # No substituent at this site
+            molecule_sites[ref_id] = {
+                "label": f"R_{ref_id}({symbol})",
+                "fragment_atom_index": atom_1,
+                "fragment_atom_symbol": symbol,
+                "branches": {},
+                "layers": {i: [] for i in range(1, max_layers + 1)},
+                "all_substituent_atoms": [],
+            }
+            continue
+
+        # BFS to find connected components of external atoms reachable from each root
+        visited_global = set()
+        branches = {}
+        branch_id = 0
+
+        for root in external_roots:
+            if root in visited_global:
+                continue
+            # BFS through external atoms only
+            component = set()
+            queue_bfs = [root]
+            while queue_bfs:
+                current = queue_bfs.pop(0)
+                if current in component:
+                    continue
+                component.add(current)
+                for nb in range(n_atoms):
+                    if connectivity_matrix[current, nb] == 1 and nb not in frag_set and nb not in component:
+                        queue_bfs.append(nb)
+
+            visited_global |= component
+            branch_id += 1
+
+            # Determine root atoms for this branch (external atoms directly bonded to this fragment atom)
+            branch_roots = [r for r in external_roots if r in component]
+
+            # Check if this component also touches other fragment atoms
+            touched_fragment = set()
+            for ext_atom in component:
+                for nb in range(n_atoms):
+                    if connectivity_matrix[ext_atom, nb] == 1 and nb in frag_set and nb != atom_0:
+                        touched_fragment.add(nb + 1)  
+
+            branches[f"branch_{branch_id}"] = {
+                "atom_indices": sorted([a + 1 for a in component]),  # 1-based
+                "root_atoms": sorted([r + 1 for r in branch_roots]),  
+                "touches_other_fragment_atoms": len(touched_fragment) > 0,
+                "connected_fragment_atoms": sorted(touched_fragment),
+            }
+
+        # Calculate cumulative topological layers via BFS from the fragment atom
+        # L1: external atoms at distance 1 from fragment atom
+        # L2: L1 and external atoms at distance 2
+        # L3: L2 and external atoms at distance 3
+        all_external = set()
+        for b in branches.values():
+            all_external.update([a - 1 for a in b["atom_indices"]])  # back to 0-based
+
+        layers = {}
+        cumulative = set()
+        # BFS from atom_0, only through external atoms
+        dist = {atom_0: 0}
+        bfs_queue = [atom_0]
+        visited_bfs = {atom_0}
+        while bfs_queue:
+            current = bfs_queue.pop(0)
+            for nb in range(n_atoms):
+                if connectivity_matrix[current, nb] == 1 and nb not in visited_bfs:
+                    if nb in all_external:
+                        d = dist[current] + 1
+                        dist[nb] = d
+                        visited_bfs.add(nb)
+                        bfs_queue.append(nb)
+
+        for layer_num in range(1, max_layers + 1):
+            atoms_at_dist = [a for a, d in dist.items() if d <= layer_num and a in all_external]
+            cumulative = set(atoms_at_dist)
+            layers[layer_num] = sorted([a + 1 for a in cumulative])
+
+        # Compute Distal Layers via reverse Multi-Source BFS
+        distal_layers = {}
+        if all_external:
+            # Find the maximum distance in the substituent subgraph
+            D_max = max(d for a, d in dist.items() if a in all_external)
+            # Gather all atoms at D_max
+            distal_region = [a for a, d in dist.items() if a in all_external and d == D_max]
+            
+            # Multi-source BFS starting from the distal region
+            rev_dist = {a: 0 for a in distal_region}
+            rev_queue = list(distal_region)
+            visited_rev = set(distal_region)
+            
+            while rev_queue:
+                current = rev_queue.pop(0)
+                for nb in range(n_atoms):
+                    if connectivity_matrix[current, nb] == 1 and nb not in visited_rev:
+                        if nb in all_external:
+                            d = rev_dist[current] + 1
+                            rev_dist[nb] = d
+                            visited_rev.add(nb)
+                            rev_queue.append(nb)
+            
+            # Create cumulative distal layers D1, D2, D3
+            # layer_num corresponds to distance bounds: 
+            # D1: dist<=0
+            # D2: dist<=1
+            # D3: dist<=2
+            for layer_num in range(1, max_layers + 1):
+                max_d = layer_num - 1
+                atoms_at_dist = [a for a, d in rev_dist.items() if d <= max_d and a in all_external]
+                distal_layers[layer_num] = sorted([a + 1 for a in set(atoms_at_dist)])
+
+        # Count heavy atoms and heteroatoms
+        all_sub_atoms_1based = sorted(set(
+            a for b in branches.values() for a in b["atom_indices"]
+        ))
+
+        # Find internal bonds between substituent atoms
+        internal_bonds = []
+        sub_atoms_0based = [a - 1 for a in all_sub_atoms_1based]
+        for i in range(len(sub_atoms_0based)):
+            for j in range(i + 1, len(sub_atoms_0based)):
+                a1 = sub_atoms_0based[i]
+                a2 = sub_atoms_0based[j]
+                if connectivity_matrix[a1, a2] == 1:
+                    internal_bonds.append((a1 + 1, a2 + 1))
+
+        molecule_sites[ref_id] = {
+            "label": f"R_{ref_id}({symbol})",
+            "fragment_atom_index": atom_1,
+            "fragment_atom_symbol": symbol,
+            "branches": branches,
+            "layers": layers,
+            "distal_layers": distal_layers,
+            "all_substituent_atoms": all_sub_atoms_1based,
+            "internal_bonds": internal_bonds,
+        }
+
+    return molecule_sites
+
+
 def main(fragment_matrix: np.ndarray, fragment_symbols: list[str], directory: str,
          req: str) -> tuple[list, list, list]:
     """
@@ -562,8 +749,10 @@ def main(fragment_matrix: np.ndarray, fragment_symbols: list[str], directory: st
     res, found, not_found = search_fragment_in_molecules(mols, fragment_matrix, fragment_symbols)
     return res, found, not_found
 
+
 # Function start()
-def start(file_path: str, specificity: str, req: str = 'all', search: bool = True) -> tuple[dict, list, dict]:
+def start(file_path: str, specificity: str, req: str = 'all', search: bool = True,
+          analyze_substituents: bool = False) -> tuple[dict, list, dict]:
     """
     Interactively select a fragment. If search=True, search for it in other molecules.
     If search=False, return the selected atoms directly (Direct Selection Mode).
@@ -680,7 +869,8 @@ def start(file_path: str, specificity: str, req: str = 'all', search: bool = Tru
     )
 
     def record_match(name: str, indices: list[int], fragment_in_molecule: list[str],
-                     dic_num: dict, dic_vec: dict, interest_rel_idx: list[int]):
+                     dic_num: dict, dic_vec: dict, interest_rel_idx: list[int],
+                     mol_matrix: np.ndarray = None, mol_symbols: list[str] = None):
         real_indices = [i + 1 for i in indices]
         full_fragment_labels = [f"{real_indices[i]}({fragment_in_molecule[i]})" for i in range(len(real_indices))]
         selected_fragment_labels = [full_fragment_labels[i] for i in interest_rel_idx if i < len(full_fragment_labels)]
@@ -690,28 +880,48 @@ def start(file_path: str, specificity: str, req: str = 'all', search: bool = Tru
             for label in selected_fragment_labels
         }
         key = Path(name).stem
-        results_dict.setdefault(key, []).append({
+        entry = {
             'fragment_indices': real_indices,
             'fragment_atoms': fragment_in_molecule,
             'selected_atoms': selected_fragment_labels,
             'neighbor_dict': ordered_neighbors,
             'interest_atom_indices': selected_fragment_indices
-        })
+        }
+
         print(f"\n---> Molecule: {key}")
         print("Fragment atoms (full):", full_fragment_labels)
         print("Selected fragment atoms:", selected_fragment_labels)
         print(f"Neighbor dictionary: {ordered_neighbors}")
 
+        # Substituent site analysis
+        if analyze_substituents and mol_matrix is not None and mol_symbols is not None:
+            fragment_0based = [i - 1 for i in real_indices]
+            interest_0based = [i - 1 for i in selected_fragment_indices]
+            sites = identify_substituent_sites(
+                mol_matrix, mol_symbols,
+                fragment_0based, interest_0based,
+                atoms_of_interest,  # reference labels from the base fragment
+            )
+            entry['substituent_sites'] = sites
+            print(f"  Substituent sites identified: {len(sites)} sites")
+            for site_id, site_data in sites.items():
+                n_branches = len(site_data['branches'])
+                n_sub_atoms = len(site_data['all_substituent_atoms'])
+                print(f"    {site_data['label']}: {n_branches} branch(es), {n_sub_atoms} substituent atom(s)")
+
+        results_dict.setdefault(key, []).append(entry)
+
     print("\nResults of the fragment search:")
     matched_files: set[str] = set()
     filtered_results_names = []
 
-    for name, indices, frag_in_molecule, dic_num, dic_vec in results:
+    for name, indices, frag_in_molecule, dic_num, dic_vec, mol_matrix, mol_symbols in results:
         if specificity == '1':
             if neighbor_count_signature(dic_num) != base_signature:
                 continue  # discard if the signature (symbol, degree) does not match
         
-        record_match(name, indices, frag_in_molecule, dic_num, dic_vec, interest_rel)
+        record_match(name, indices, frag_in_molecule, dic_num, dic_vec, interest_rel,
+                     mol_matrix, mol_symbols)
         matched_files.add(name)
         filtered_results_names.append(name)
 

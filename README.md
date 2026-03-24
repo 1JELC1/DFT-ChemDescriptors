@@ -2,7 +2,7 @@
 
 ![DFT-ChemDescriptors Logo](images/logo-chem2.png)
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18868438.svg)](https://doi.org/10.5281/zenodo.18868438)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18868437.svg)](https://doi.org/10.5281/zenodo.18868437)
 
 A comprehensive Python tool for obtaining **global and local molecular properties** using Density Functional Theory (DFT) results and generating standard chemical descriptors (RDKit, Mordred).
 
@@ -18,6 +18,7 @@ It supports **Gaussian (`.fchk`)** and **ORCA (`.wfn`/`.wfx`)** formats. This wo
     *   **QTAIM Critical Points**: Calculates **Atomic Critical Points (ACPs)** and **Bond Critical Points (BCPs)** associated with the fragment.
     *   **Orbital Overlap Distance D(r)**: Optionally extracts the orbital overlap distance function $D(r)$ at each critical point.
     *   **Derived Fragment Properties**: Aggregated properties capturing the electronic environment and variability of the entire fragment.
+*   **Substituent Site Descriptors** *(New in v2.0)*: Per-site statistical analysis of substituent branches attached to each fragment atom. Includes proximal layers (L1–L3), distal layers (D1–D3), anchor BCPs, and internal BCPs — all computed in parallel.
 *   **Descriptor Generation**: Calculates **1D, 2D, and 3D** descriptors using **RDKit** and **Mordred**.
 *   **Interactive Fragment Finder**: A 3D graphical interface to identify common substructures across a series of molecules for targeted local property extraction.
     *   *Powered by [FragmentFinder](https://github.com/1JELC1/FragmentFinder).*
@@ -95,6 +96,28 @@ Descriptors calculated specifically for the **fragment atoms** to capture the im
 *   **Detailed Documentation**: Please refer to [Derived Fragment Properties](DERIVED_PROPERTIES.md) for a complete explanation of the aggregated charges, topological indices, and G/V ratios.
 *   **Aggregated Properties**: Includes sums of atomic charges, sums of Fukui indices, and total electron density at Bond Critical Points (BCPs) within the fragment.
 
+### Substituent Site Descriptors (`substituent_site_descriptors.csv`) *(New in v2.0)*
+
+When **substituent site analysis** is enabled, the script identifies the substituent branches attached to each atom of the common fragment and computes comprehensive statistical descriptors for each site.
+
+**Naming Convention**: `R_{atomID}({symbol})_{block}_{property}`
+
+**Descriptor Blocks**:
+
+| Block | Description |
+|---|---|
+| `general` | Statistical aggregation (sum, mean, max, min, std) over **all** substituent atoms at the site |
+| `L1`, `L2`, `L3` | **Proximal layers**: cumulative topological layers expanding outward from the fragment atom |
+| `D1`, `D2`, `D3` | **Distal layers**: cumulative layers expanding inward from the most distant substituent atoms (tips), computed via reverse multi-source BFS |
+| `BCP_anchor` | Bond critical point properties for the bond between the fragment atom and each root substituent atom |
+| `BCP_internal` | Bond critical point statistics for bonds **within** the substituent branches |
+
+**Properties computed per block**: Charges, Fukui indices ($f^+$, $f^-$, $f^0$, CDD), Atomic Critical Points (ACPs), internal Bond Critical Points (BCPs), and optionally Orbital Overlap Distance $D(r)$ at anchor BCPs.
+
+**Performance**: Substituent calculations are parallelized using `ThreadPoolExecutor` for efficient processing of large datasets.
+
+For a detailed explanation of all substituent descriptor types and methodology, please refer to [Derived Fragment Properties](DERIVED_PROPERTIES.md).
+
 ### Molecular Descriptors (`molecular_descriptors_rdkit_mordred_padel.csv`)
 *   **RDKit & Mordred**: Comprehensive set of **1D, 2D, and 3D** descriptors.
 *   *Note: PaDEL integration is included in `other_desc.py` but disabled by default.*
@@ -158,7 +181,7 @@ Feel free to check the [issues page](https://github.com/1JELC1/DFT-ChemDescripto
 
 If you use this software in your research, please cite it using our Zenodo DOI:
 
-**DOI:** [10.5281/zenodo.18868438](https://doi.org/10.5281/zenodo.18868438)
+**DOI:** [10.5281/zenodo.18868437](https://doi.org/10.5281/zenodo.18868437)
 
 You can also use the citation metadata provided in the [CITATION.cff](CITATION.cff) file.
 

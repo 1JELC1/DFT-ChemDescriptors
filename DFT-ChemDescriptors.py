@@ -755,7 +755,7 @@ if error_molecules:
         print(mol)
 
 
-''' Section 3: DFT properties calculation (Generate CDFT files) '''
+''' Section 2: DFT properties calculation (Generate CDFT files) '''
 
 # Check if full triad is available for CDFT
 process_cdft = (process_neutral and process_anion and process_cation) and len(complete_molecules) > 0
@@ -817,7 +817,7 @@ if process_cdft:
 else:
     print("\nSkipping CDFT calculation (requires Neutral, Anion, and Cation states).")
 
-''' Section 4: Extract global reactivity parameters (Extract from CDFT files) '''
+''' Section 3: Extract global reactivity parameters (Extract from CDFT files) '''
 
 if process_cdft:
     # Conversion factor for Hartree to eV energies
@@ -1027,7 +1027,7 @@ if process_cdft:
 else:
     print("\nSkipping Global Properties extraction (no CDFT files generated).")
 
-''' Section 5: Base fragment search and atoms for property calculation in each molecule '''
+''' Section 4: Base fragment search and atoms for property calculation in each molecule '''
 expected_xyz_names = set()
 for file_path in target_files_list:
     base_name = get_molecule_name(file_path, target_extension)
@@ -1067,7 +1067,15 @@ while True:
     if specificity not in ['0', '1']:
         specificity = "0"
 
-    results, atoms_of_interest, neighbor_dict = Ff.start(file, specificity)
+    # Ask about substituent site analysis
+    analyze_substituents_input = input(
+        "\nCalculate substituent site descriptors? (y/n, default n): "
+    ).strip().lower()
+    analyze_substituents = analyze_substituents_input == 'y'
+
+    results, atoms_of_interest, neighbor_dict = Ff.start(
+        file, specificity, analyze_substituents=analyze_substituents
+    )
 
     print(f"ATOMS OF INTEREST: {atoms_of_interest}")
     # Keep only first match per molecule
@@ -1087,7 +1095,7 @@ while True:
     else:
         break
 
-''' Section 6: Extraction and calculation of local properties (Extract from CDFT files) '''
+''' Section 5: Extraction and calculation of local properties (Extract from CDFT files) '''
 
 cdft_file_names = {p.name for p in Path(cdft_folder).glob("*_CDFT.txt")}
 
@@ -1913,10 +1921,12 @@ def extract_bond_cps_properties(cps_folder, cps_properties_list, state):
     if state == "N-1":
         charge = cation_extension
         path_list = list(Path(cps_folder).glob(f'*{charge}_cps_*_bond.txt'))
+        path_list = [p for p in path_list if '_sub_' not in p.name]
         molecule_names = [p.stem.split(charge)[0] for p in path_list]
     elif state == "N+1":
         charge = anion_extension
         path_list = list(Path(cps_folder).glob(f'*{charge}_cps_*_bond.txt'))
+        path_list = [p for p in path_list if '_sub_' not in p.name]
         molecule_names = [p.stem.split(charge)[0] for p in path_list]
     else:
         charge = neutral_extension
@@ -1925,6 +1935,7 @@ def extract_bond_cps_properties(cps_folder, cps_properties_list, state):
         cation_list = set(Path(p) for p in glob.glob(str(Path(cps_folder) / f'*{cation_extension}_cps_*_bond.txt')))
         path_list = [Path(p) for p in glob.glob(str(Path(cps_folder) / f'*{neutral_extension}_cps_*_bond.txt'))
                        if Path(p) not in anion_list and Path(p) not in cation_list]
+        path_list = [p for p in path_list if '_sub_' not in p.name]
         molecule_names = [p.stem.split('_cps')[0] for p in path_list]
 
     for i, file in enumerate(path_list):
@@ -2717,7 +2728,517 @@ def calculate_fragment_descriptors_csv(work_path, atoms_of_interest):
 
 calculate_fragment_descriptors_csv(work_path, atoms_of_interest)
 
-# Create a clean version of properties.csv without any missing data
+# ==============================
+#  Substituent Site Descriptors 
+# ==============================
+
+# This module will calculate the chemical descriptors of the substituents attached to the atoms in the fragment
+
+def calculate_substituent_site_descriptors(
+    results_dict, work_path, method_suffixes_list, cps_properties_list,
+    atoms_of_interest_labels, molecule_file_map, neutral_extension,
+    anion_extension, cation_extension, process_neutral, process_anion,
+    process_cation, calc_dr
+):
+    """
+    For each molecule and each fragment site R_{ID}({sym}), calculate:
+      - General block: aggregate over all substituent atoms
+      - Layer blocks (L1, L2, L3): aggregate by cumulative topological distance
+      - BCP anchor: properties of the bond between fragment atom and first substituent atom(s)
+    """
+    import statistics as stat_mod
+    from collections import defaultdict
+
+    print("\n" + "="*70)
+    print("  SUBSTITUENT SITE DESCRIPTOR CALCULATION")
+    print("="*70)
+
+    charge_methods = [method for (_, method) in method_suffixes_list]
+    charges_folder = work_path / "charges"
+    cps_folder = work_path / "cps"
+
+    # compute stats for a list of numeric values
+    def compute_stats(values, prefix):
+        """Return dict of {prefix_sum, prefix_mean, prefix_max, prefix_min, prefix_std}."""
+        clean = [v for v in values if v is not None and not np.isnan(v)]
+        if not clean:
+            return {
+                f"{prefix}_sum": 0, f"{prefix}_mean": 0,
+                f"{prefix}_max": 0, f"{prefix}_min": 0, f"{prefix}_std": 0,
+            }
+        return {
+            f"{prefix}_sum": sum(clean),
+            f"{prefix}_mean": np.mean(clean),
+            f"{prefix}_max": max(clean),
+            f"{prefix}_min": min(clean),
+            f"{prefix}_std": np.std(clean) if len(clean) > 1 else 0,
+        }
+
+    # read charge CSV and return full DataFrame
+    def load_charge_df(molecule, method):
+        path = charges_folder / f"{molecule}_{method}_charges.csv"
+        if path.exists():
+            return pd.read_csv(path)
+        return None
+    # read ACP properties from existing atomic CP file
+    def read_acp_properties(molecule, state, ext, required_atoms):
+        """Read atomic CP properties from the cps/ folder for all atoms.
+           Calculate properties for missing substituent atoms if needed."""
+        output_name = f"{molecule}{ext}"
+        cp_file = cps_folder / f"{output_name}_cps_atomic.txt"
+        sub_cp_file = cps_folder / f"{output_name}_cps_sub_atomic.txt"
+        
+        atom_props = {}  # atom_index_1based -> {prop: value}
+        
+        def _read_file(fpath):
+            if not fpath.exists(): return
+            with open(fpath, 'r') as f:
+                lines = f.readlines()
+                current_atom_idx = None
+                for line in lines:
+                    if 'Corresponding nucleus:' in line:
+                        parts = "".join(line.split()[2:])
+                        try:
+                            current_atom_idx = int(parts.split("(")[0].strip())
+                        except Exception:
+                            current_atom_idx = None
+                    if current_atom_idx is not None:
+                        for prop in cps_properties_list:
+                            if line.strip().startswith(prop + ":"):
+                                try:
+                                    value = float(line.split(':')[-1].split()[0].strip())
+                                    atom_props.setdefault(current_atom_idx, {})[prop] = value
+                                except (ValueError, IndexError):
+                                    pass
+        
+        _read_file(cp_file)
+        _read_file(sub_cp_file)
+
+        missing_atoms = [a for a in required_atoms if a not in atom_props]
+        if missing_atoms:
+            # Need to calculate atomic CPs for missing atoms
+            full_file_path = molecule_file_map.get(molecule, {}).get(
+                'N' if ext == neutral_extension else ('N+1' if ext == anion_extension else 'N-1')
+            )
+            if full_file_path and Path(full_file_path).exists():
+                tmp_dir = tempfile.mkdtemp()
+                try:
+                    tmp_path = Path(tmp_dir)
+                    input_path = tmp_path / "inputs.txt"
+                    indices_str = ",".join(str(a) for a in missing_atoms)
+                    with open(input_path, "w") as f:
+                        f.write(f"""
+        {full_file_path}
+        2
+        -1
+        10
+        1
+        {indices_str}
+        0
+        2
+        7
+        0
+        -10
+        q
+        """)
+                    try:
+                        run_multiwfn(input_path, tmp_path)
+                        gen_cp_file = tmp_path / "CPprop.txt"
+                        if gen_cp_file.exists() and gen_cp_file.stat().st_size > 0:
+                            # Append to sub_cp_file
+                            with open(sub_cp_file, "a") as out_f, open(gen_cp_file, "r") as in_f:
+                                out_f.write(in_f.read())
+                            _read_file(sub_cp_file)
+                    except Exception:
+                        pass
+                finally:
+                    shutil.rmtree(tmp_dir)
+
+        return atom_props
+
+    # calculate BCP between two atoms (either anchor or internal substituent)
+    def get_substituent_bcp_properties(molecule, state, ext, a1, a2, is_anchor=False):
+        """
+        Calculate BCP between two atoms handling Multiwfn machinery.
+        Returns dict of {prop: value} or empty dict.
+        """
+        output_name = f"{molecule}{ext}"
+        # Look for existing BCP file
+        min_a = min(a1, a2)
+        max_a = max(a1, a2)
+        if is_anchor:
+            bond_file = cps_folder / f"{output_name}_cps_sub_anchor_{min_a}-{max_a}_bond.txt"
+        else:
+            bond_file = cps_folder / f"{output_name}_cps_sub_{min_a}-{max_a}_bond.txt"
+
+        if not bond_file.exists():
+            full_file_path = molecule_file_map.get(molecule, {}).get(
+                'N' if ext == neutral_extension else ('N+1' if ext == anion_extension else 'N-1')
+            )
+            if not full_file_path or not Path(full_file_path).exists():
+                return {}
+
+            tmp_dir = tempfile.mkdtemp()
+            try:
+                tmp_path = Path(tmp_dir)
+                input_path = tmp_path / "inputs.txt"
+                indices_pair = f"{min_a},{max_a}"
+                with open(input_path, "w") as f:
+                    f.write(f"""
+        {full_file_path}
+        2
+        -1
+        10
+        1
+        {indices_pair}
+        0
+        3
+        7
+        0
+        -10
+        q
+        """)
+                try:
+                    run_multiwfn(input_path, tmp_path)
+                    cp_file = tmp_path / "CPprop.txt"
+                    if cp_file.exists() and cp_file.stat().st_size > 0:
+                        shutil.move(str(cp_file), str(bond_file))
+                    else:
+                        return {}
+                except Exception:
+                    return {}
+            finally:
+                shutil.rmtree(tmp_dir)
+
+        # Parse the BCP file
+        props = {}
+        cp_coords = None
+        with open(bond_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if calc_dr and is_anchor and line.startswith('Position (Bohr):'):
+                    parts = line.split()
+                    try:
+                        x, y, z = float(parts[2]), float(parts[3]), float(parts[4])
+                        cp_coords = (x, y, z)
+                    except Exception:
+                        pass
+                for prop in cps_properties_list:
+                    if line.startswith(prop + ":"):
+                        try:
+                            value = float(line.split(':')[-1].split()[0].strip())
+                            props[prop] = value
+                        except (ValueError, IndexError):
+                            pass
+
+        if calc_dr and is_anchor and cp_coords:
+            dr_key = f"{molecule}_{state}_anchor_{min_a}-{max_a}"
+            dr_val = dr_cache.get(dr_key)
+            if dr_val is None:
+                full_file_path = molecule_file_map.get(molecule, {}).get(
+                    'N' if ext == neutral_extension else ('N+1' if ext == anion_extension else 'N-1')
+                )
+                if full_file_path and Path(full_file_path).exists():
+                    dr_val = extract_dr_value(str(full_file_path), cp_coords[0], cp_coords[1], cp_coords[2])
+                    if dr_val is not None:
+                        save_to_dr_cache(dr_key, dr_val)
+            if dr_val is not None:
+                props['Orbital_Overlap_Distance_D(r)'] = dr_val
+
+        return props
+
+    # Process each molecule using thread pool
+
+    def process_sub_molecule(molecule, data_list):
+        mol_rows = []
+        for datum in data_list:
+            sites = datum.get('substituent_sites')
+            if not sites:
+                continue
+
+            row = {'Molecule': molecule}
+
+            # Load charge data
+            charge_dfs = {}
+            for method in charge_methods:
+                df = load_charge_df(molecule, method)
+                if df is not None:
+                    charge_dfs[method] = df
+
+            # Collect all substituent atoms for this molecule
+            all_sub_atoms = set()
+            for site_id, site_data in sites.items():
+                all_sub_atoms.update(site_data['all_substituent_atoms'])
+            all_sub_atoms = sorted(list(all_sub_atoms))
+
+            # Load ACP data for each state
+            acp_data = {}
+            state_ext_map = {}
+            if process_neutral:
+                state_ext_map['N'] = neutral_extension
+            if process_anion:
+                state_ext_map['N+1'] = anion_extension
+            if process_cation:
+                state_ext_map['N-1'] = cation_extension
+            for state, ext in state_ext_map.items():
+                acp_data[state] = read_acp_properties(molecule, state, ext, all_sub_atoms)
+
+            # Process each site
+            for site_id, site_data in sites.items():
+                label = site_data['label']  # "R_4(C)"
+                frag_atom_idx = site_data['fragment_atom_index']  # 1-based
+                all_sub_atoms = site_data['all_substituent_atoms']  
+                layers = site_data['layers']
+                distal_layers = site_data.get('distal_layers', {})
+                branches = site_data['branches']
+                internal_bonds = site_data.get('internal_bonds', [])
+
+                if not all_sub_atoms:
+                    # fill with zeros if there are no substituents
+                    row[f"{label}_general_n_branches"] = 0
+                    row[f"{label}_general_n_atoms"] = 0
+                    continue
+
+                # GENERAL BLOCK
+                # this block is for the general properties of the fragment
+                row[f"{label}_general_n_branches"] = len(branches)
+                row[f"{label}_general_n_atoms"] = len(all_sub_atoms)
+
+                # Count heavy atoms and heteroatoms
+                mol_symbols_available = datum.get('fragment_atoms', [])
+                heavy_atoms = 0
+                heteroatoms = 0
+                first_method = charge_methods[0] if charge_methods else None
+                df_ref = charge_dfs.get(first_method) if first_method else None
+                if df_ref is not None and 'Atom' in df_ref.columns:
+                    for atom_idx in all_sub_atoms:
+                        r = atom_idx - 1
+                        if r < len(df_ref):
+                            atom_str = str(df_ref.iloc[r]['Atom'])
+                            sym = ''.join([c for c in atom_str if c.isalpha()])
+                            if sym != 'H':
+                                heavy_atoms += 1
+                            if sym not in ('C', 'H'):
+                                heteroatoms += 1
+
+                row[f"{label}_general_n_heavy_atoms"] = heavy_atoms
+                row[f"{label}_general_n_heteroatoms"] = heteroatoms
+
+                def add_charge_stats(atom_indices, block_label):
+                    """Extract charge/Fukui stats for a set of atom indices"""
+                    for method in charge_methods:
+                        df_c = charge_dfs.get(method)
+                        if df_c is None:
+                            continue
+                        # Properties to aggregate
+                        props_to_agg = []
+                        for col in df_c.columns:
+                            if col == 'Atom':
+                                continue
+                            props_to_agg.append(col)
+
+                        for prop in props_to_agg:
+                            values = []
+                            for aidx in atom_indices:
+                                r = aidx - 1
+                                if r < len(df_c):
+                                    try:
+                                        values.append(float(df_c.iloc[r][prop]))
+                                    except (ValueError, TypeError):
+                                        pass
+                            # property name for column
+                            if 'D(r)' in prop:
+                                prop_clean = prop.replace(' ', '_')
+                            else:
+                                prop_clean = prop.replace(' ', '_').replace('(', '').replace(')', '')
+                            prefix = f"{label}_{block_label}_{prop_clean}_{method}"
+                            row.update(compute_stats(values, prefix))
+
+                def add_acp_stats(atom_indices, block_label):
+                    """Extract ACP stats for a set of atom indices"""
+                    for state, acp_dict in acp_data.items():
+                        acp_count = sum(1 for aidx in atom_indices if aidx in acp_dict)
+                        row[f"{label}_{block_label}_ACP_count_{state}"] = acp_count
+                        
+                        for prop in cps_properties_list:
+                            values = []
+                            for aidx in atom_indices:
+                                atom_acp = acp_dict.get(aidx, {})
+                                if prop in atom_acp:
+                                    values.append(atom_acp[prop])
+                            if 'D(r)' in prop:
+                                prop_clean = prop.replace(' ', '_')
+                            else:
+                                prop_clean = prop.replace(' ', '_').replace('(', '').replace(')', '')
+                            prefix = f"{label}_{block_label}_ACP_{prop_clean}_{state}"
+                            if values:
+                                row.update(compute_stats(values, prefix))
+                            else:
+                                row.update(compute_stats([], prefix))
+
+                def add_bcp_stats(bond_pairs, block_label):
+                    """Extract BCP stats for a set of internal bond pairs"""
+                    bcp_props = []
+                    for state, ext in state_ext_map.items():
+                        for a1, a2 in bond_pairs:
+                            props = get_substituent_bcp_properties(molecule, state, ext, a1, a2, is_anchor=False)
+                            if props:
+                                bcp_props.append((state, props))
+
+                    row[f"{label}_{block_label}_BCP_internal_count"] = len(bond_pairs)
+                    for state in state_ext_map.keys():
+                        state_bcps = [p for s, p in bcp_props if s == state]
+                        
+                        props_to_agg = list(cps_properties_list)
+                        if calc_dr:
+                            props_to_agg.append('Orbital_Overlap_Distance_D(r)')
+
+                        for prop in props_to_agg:
+                            values = [bcp.get(prop) for bcp in state_bcps if prop in bcp]
+                            valid_values = [v for v in values if v is not None]
+                            if 'D(r)' in prop:
+                                prop_clean = prop.replace(' ', '_')
+                            else:
+                                prop_clean = prop.replace(' ', '_').replace('(', '').replace(')', '')
+                            prefix = f"{label}_{block_label}_BCP_internal_{prop_clean}_{state}"
+                            if valid_values:
+                                row.update(compute_stats(valid_values, prefix))
+                            else:
+                                row.update(compute_stats([], prefix))
+
+                # General block: charges + ACPs + Internal BCPs
+                add_charge_stats(all_sub_atoms, "general")
+                add_acp_stats(all_sub_atoms, "general")
+                add_bcp_stats(internal_bonds, "general")
+
+                # LAYER BLOCKS (L1, L2, L3)
+                for layer_num in range(1, 4):
+                    layer_atoms = layers.get(layer_num, [])
+                    block_label = f"L{layer_num}"
+                    row[f"{label}_{block_label}_n_atoms"] = len(layer_atoms)
+                    if layer_atoms:
+                        add_charge_stats(layer_atoms, block_label)
+                        add_acp_stats(layer_atoms, block_label)
+                        layer_bonds = [
+                            (a1, a2) for a1, a2 in internal_bonds 
+                            if a1 in layer_atoms and a2 in layer_atoms
+                        ]
+                        add_bcp_stats(layer_bonds, block_label)
+
+                # DISTAL LAYER BLOCKS (D1, D2, D3)
+                for layer_num in range(1, 4):
+                    d_layer_atoms = distal_layers.get(layer_num, [])
+                    block_label = f"D{layer_num}"
+                    row[f"{label}_{block_label}_n_atoms"] = len(d_layer_atoms)
+                    if d_layer_atoms:
+                        add_charge_stats(d_layer_atoms, block_label)
+                        add_acp_stats(d_layer_atoms, block_label)
+                        d_layer_bonds = [
+                            (a1, a2) for a1, a2 in internal_bonds 
+                            if a1 in d_layer_atoms and a2 in d_layer_atoms
+                        ]
+                        add_bcp_stats(d_layer_bonds, block_label)
+
+                # BCP ANCHOR BLOCK
+                # Collect all root atoms across branches
+                all_root_atoms = []
+                for branch_data in branches.values():
+                    all_root_atoms.extend(branch_data['root_atoms'])
+                all_root_atoms = sorted(set(all_root_atoms))
+
+                anchor_bcp_props = []
+                for state, ext in state_ext_map.items():
+                    for root_atom in all_root_atoms:
+                        bcp_props = get_substituent_bcp_properties(
+                            molecule, state, ext, frag_atom_idx, root_atom, is_anchor=True
+                        )
+                        if bcp_props:
+                            anchor_bcp_props.append((state, root_atom, bcp_props))
+
+                # Aggregate anchor BCPs per state
+                row[f"{label}_BCP_anchor_count"] = len(all_root_atoms)
+                for state in state_ext_map.keys():
+                    state_bcps = [p for s, _, p in anchor_bcp_props if s == state]
+                    
+                    props_to_aggregate = list(cps_properties_list)
+                    if calc_dr:
+                        props_to_aggregate.append('Orbital_Overlap_Distance_D(r)')
+
+                    for prop in props_to_aggregate:
+                        values = [bcp.get(prop) for bcp in state_bcps if prop in bcp]
+                        # Only calculate stats if at least one value is not None
+                        valid_values = [v for v in values if v is not None]
+                        if 'D(r)' in prop:
+                            prop_clean = prop.replace(' ', '_')
+                        else:
+                            prop_clean = prop.replace(' ', '_').replace('(', '').replace(')', '')
+                        prefix = f"{label}_BCP_anchor_{prop_clean}_{state}"
+                        if valid_values:
+                            row.update(compute_stats(valid_values, prefix))
+                        else:
+                            row.update(compute_stats([], prefix))
+
+            mol_rows.append(row)
+            
+        return mol_rows
+
+    all_rows = []  # list of dicts, one per molecule
+    print(f"\nParallelizing substituent analysis with {processes} threads...")
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=processes) as executor:
+        futures = [executor.submit(process_sub_molecule, mol, data) for mol, data in results_dict.items()]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                result_rows = future.result()
+                if result_rows:
+                    all_rows.extend(result_rows)
+            except Exception as e:
+                print(f"Error processing molecule substituents: {e}")
+    if not all_rows:
+        print("No substituent site descriptors to calculate.")
+        return None
+
+    sub_df = pd.DataFrame(all_rows)
+
+    # Fill NaN with 0 for missing layers/sites
+    sub_df.fillna(0, inplace=True)
+
+    # Remove columns that are all zeros
+    numeric_cols = sub_df.select_dtypes(include=[np.number]).columns
+    cols_to_drop = [c for c in numeric_cols if (sub_df[c] == 0).all()]
+    sub_df.drop(columns=cols_to_drop, inplace=True)
+
+    save_csv(sub_df, 'substituent_site_descriptors.csv', work_path)
+    print(f"Generated substituent site descriptors: {len(sub_df.columns) - 1} descriptor columns")
+
+    # Merge into properties.csv
+    try:
+        props_path = work_path / 'properties.csv'
+        if props_path.exists():
+            props_df = pd.read_csv(props_path)
+            props_df['Molecule'] = props_df['Molecule'].astype(str)
+            sub_df['Molecule'] = sub_df['Molecule'].astype(str)
+            merged = pd.merge(props_df, sub_df, on='Molecule', how='left')
+            save_csv(merged, 'properties.csv', work_path)
+            print("Substituent descriptors merged into properties.csv")
+    except Exception as e:
+        print(f"Error merging substituent descriptors: {e}")
+
+    return sub_df
+
+# Run substituent analysis if enabled
+if analyze_substituents:
+    print("\nStarting substituent site descriptor calculation...")
+    calculate_substituent_site_descriptors(
+        results, work_path, method_suffixes, cps_properties_list,
+        atoms_of_interest, molecule_file_map, neutral_extension,
+        anion_extension, cation_extension, process_neutral, process_anion,
+        process_cation, calc_dr
+    )
+else:
+    print("\nSubstituent site analysis skipped (not requested).")
+
+# Create a clean version of properties.csv without any missing values
 try:
     final_csv_path = work_path / "properties.csv"
     if final_csv_path.exists():
